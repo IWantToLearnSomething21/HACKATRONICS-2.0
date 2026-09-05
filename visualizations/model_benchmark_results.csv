@@ -1,0 +1,3 @@
+Model Name,Macro F1,Weighted F1,Pathological Recall (Class 3),Normal F1 (Class 1),Suspect F1 (Class 2),Pathological F1 (Class 3)
+Family A: Logistic Regression,0.7932,0.8883,0.9429,0.938,0.6917,0.75
+Family B: Balanced Random Forest,0.92,0.9534,0.9429,0.9742,0.843,0.9429
