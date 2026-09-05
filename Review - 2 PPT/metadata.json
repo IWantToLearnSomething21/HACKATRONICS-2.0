@@ -1,0 +1,6 @@
+{
+  "name": "The Hammacher System - Clinical Pitch Deck",
+  "description": "An interactive, animated presentation showcasing The Hammacher System real-time CTG telemetry, gradient boosted FIGO triage, explainable AI, and multi-tier clinical escalation routing.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

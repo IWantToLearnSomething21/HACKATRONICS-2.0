@@ -1,0 +1,6 @@
+{
+  "name": "Cube X - Fetal Distress Detection (CTG)",
+  "description": "Hackathon pitch presentation & solution architecture for Fetal Distress Detection from Cardiotocography (CTG) Signals by Team Cube X.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
