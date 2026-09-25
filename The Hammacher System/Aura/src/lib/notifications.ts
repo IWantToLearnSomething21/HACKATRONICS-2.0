@@ -38,25 +38,21 @@ export class NotificationDeliveryService {
     };
   }
 
-  public async triggerPagerDutyAlert(title: string, message: string) {
+  /**
+   * Fires a PagerDuty Events v2 trigger or resolve via the backend.
+   * dedup_key is the alertId so PD can correctly correlate resolve to its incident.
+   */
+  private async sendPagerDutyEvent(
+    eventAction: 'trigger' | 'resolve',
+    dedupKey: string,
+    summary: string,
+    details?: Record<string, string>
+  ) {
     try {
-      await fetch('https://events.pagerduty.com/v2/enqueue', {
+      await fetch('/api/notify/pagerduty', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          routing_key: '791954f6494f4e06c0190465fe1c31b3',
-          event_action: 'trigger',
-          payload: {
-            summary: title,
-            severity: 'critical',
-            source: 'AuraCTG System',
-            custom_details: {
-              message
-            }
-          }
-        })
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ eventAction, dedupKey, summary, details })
       });
     } catch (e) {
       console.error('PagerDuty dispatch failed', e);
@@ -64,11 +60,12 @@ export class NotificationDeliveryService {
   }
 
   /**
-   * Triggers an immediate automated dispatch for Pathological cases without prompting for actionable inspection.
+   * Triggers an in-app alert for Pathological cases.
+   * PagerDuty is NOT fired here — it fires only when a nurse explicitly acknowledges a suspect case.
    */
   public triggerDirectDoctorDispatch(patient: Patient) {
     const existing = this.alerts.find(a => a.patientId === patient.id && a.severity === 'pathological');
-    if (existing) return; // Already dispatched
+    if (existing) return; // Already alerted
 
     const alertId = `direct-${Date.now()}-${Math.floor(Math.random() * 1000)}`;
     const newAlert: ClinicalAlert = {
@@ -78,19 +75,17 @@ export class NotificationDeliveryService {
       bedNumber: patient.bedNumber,
       severity: 'pathological',
       title: `EMERGENCY: Pathological CTG on Bed ${patient.bedNumber}`,
-      message: `Pathological FHR pattern detected for ${patient.name}. Automated on-call escalation engaged.`,
+      message: `Pathological FHR pattern detected for ${patient.name}. Immediate bedside assessment required.`,
       morphology: patient.latestPrediction?.morphologyDescription || '',
       timestamp: Date.now(),
-      acknowledged: true, // Marks as true so it skips the Actionable Alerts queue
-      acknowledgedBy: 'System (Auto-Dispatched)',
-      acknowledgedAt: Date.now(),
-      escalationLevel: 2,
-      escalationTimer: 0,
+      acknowledged: false,
+      escalationLevel: 1,
+      escalationTimer: 120,
       escalationLogs: []
     };
 
     audioTelemetry.setAlarm('pathological');
-    this.dispatchEscalation(newAlert, 2); // Dispatch Twilio Tier 2
+    this.sendBrowserPush(newAlert.title, newAlert.message);
 
     this.alerts.unshift(newAlert);
     this.notify();
@@ -139,14 +134,9 @@ export class NotificationDeliveryService {
       escalationLogs: []
     };
 
-    // Initial dispatch
-    if (severity === 'pathological') {
-      audioTelemetry.setAlarm('pathological');
-      this.dispatchEscalation(newAlert, 2); // Push + SMS + Voice
-    } else {
-      audioTelemetry.setAlarm('suspect');
-      this.dispatchEscalation(newAlert, 1); // In-App Push
-    }
+    // All alerts go in-app (Tier 1) only. PD fires only when nurse acknowledges a suspect.
+    audioTelemetry.setAlarm(severity);
+    this.dispatchEscalation(newAlert, 1);
 
     this.alerts.unshift(newAlert);
     this.notify();
@@ -154,63 +144,44 @@ export class NotificationDeliveryService {
   }
 
   private dispatchEscalation(alert: ClinicalAlert, level: 1 | 2 | 3) {
-    const { primary, backup, tertiary } = dutyRosterService.getOnDutyTeam();
-    const targetDoc = level === 1 ? primary : level === 2 ? primary : level === 3 ? backup : tertiary;
+    const { primary, backup } = dutyRosterService.getOnDutyTeam();
+    const targetDoc = level <= 2 ? primary : backup;
 
     const logEntry: EscalationLogEntry = {
       level,
-      levelName: level === 1 ? 'Tier 1: On-Duty In-App Push' : level === 2 ? 'Tier 2: Direct SMS & Automated Voice Call' : 'Tier 3: Backup Registrar & Charge Nurse Escalation',
+      levelName: level === 1 ? 'Tier 1: On-Duty In-App Push' : level === 2 ? 'Tier 2: PagerDuty Incident + Phone' : 'Tier 3: Backup Registrar PagerDuty Escalation',
       timestamp: Date.now(),
       targetDoctorName: targetDoc.name,
       targetDoctorRole: targetDoc.role,
       phoneNumber: targetDoc.phone,
-      channel: level === 1 ? 'push' : level === 2 ? 'voice' : 'voice',
+      channel: level === 1 ? 'push' : 'voice',
       status: 'sent'
     };
 
     alert.escalationLevel = level;
     alert.escalationLogs.push(logEntry);
 
-    // 1. Web Push Notification
+    // 1. In-app browser push
     this.sendBrowserPush(alert.title, alert.message);
 
-    // 2. Dispatches for Tier 2 or 3
+    // 2. PagerDuty incident for Tier 2 / 3 — fires a real phone alert to on-call doctor
     if (level >= 2) {
-      // Send SMS
-      const smsDispatch: TwilioDispatchRecord = {
-        id: `tw-sms-${Date.now()}-${Math.floor(Math.random()*100)}`,
-        alertId: alert.id,
-        patientName: alert.patientName,
-        bedNumber: alert.bedNumber,
-        severity: alert.severity,
-        type: 'SMS',
-        toNumber: targetDoc.phone,
-        recipientName: targetDoc.name,
-        recipientRole: targetDoc.role,
-        content: `[AuraCTG CRITICAL ALERT] Bed ${alert.bedNumber} (${alert.patientName}): Pathological FHR trace. ${alert.morphology}. Escalation Tier ${level}. Ack in dashboard immediately.`,
-        timestamp: Date.now(),
-        status: 'delivered',
-        simulated: true,
-      };
-      this.twilioDispatches.unshift(smsDispatch);
+      this.sendPagerDutyEvent(
+        'trigger',
+        alert.id,
+        `[AuraCTG] ${alert.title}`,
+        {
+          bed: alert.bedNumber,
+          patient: alert.patientName,
+          morphology: alert.morphology,
+          escalation_tier: String(level),
+          doctor: targetDoc.name,
+        }
+      );
 
-      // Send real Twilio SMS via Backend
-      fetch('/api/notify/sms', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          toNumber: targetDoc.phone,
-          patientName: alert.patientName,
-          bedNumber: alert.bedNumber,
-          severity: alert.severity,
-          morphology: alert.morphology
-        })
-      }).catch(err => console.error('Twilio SMS notification failed:', err));
-
-      // Trigger Automated Voice Call Simulation (via real backend endpoint)
-      const voiceText = `Emergency Alert from Labor and Delivery Unit 4. Bed ${alert.bedNumber}, patient ${alert.patientName}. Pathological CTG pattern detected. Scalp assessment and immediate bedside intervention required. Escalation tier ${level}.`;
-      const voiceDispatch: TwilioDispatchRecord = {
-        id: `tw-voice-${Date.now()}-${Math.floor(Math.random()*100)}`,
+      // Keep a dispatch record for the UI log
+      const pdDispatch: TwilioDispatchRecord = {
+        id: `pd-${Date.now()}-${Math.floor(Math.random() * 100)}`,
         alertId: alert.id,
         patientName: alert.patientName,
         bedNumber: alert.bedNumber,
@@ -219,25 +190,13 @@ export class NotificationDeliveryService {
         toNumber: targetDoc.phone,
         recipientName: targetDoc.name,
         recipientRole: targetDoc.role,
-        content: `Outgoing automated voice dispatch to ${targetDoc.phone}`,
+        content: `PagerDuty incident triggered → ${targetDoc.name} (${targetDoc.phone})`,
         timestamp: Date.now(),
         status: 'completed',
-        simulated: true,
-        audioTranscript: voiceText
+        simulated: false,
+        audioTranscript: alert.message
       };
-      this.twilioDispatches.unshift(voiceDispatch);
-
-      // Send real Twilio Voice via Backend
-      fetch('/api/notify/voice', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          toNumber: targetDoc.phone,
-          patientName: alert.patientName,
-          bedNumber: alert.bedNumber,
-          message: voiceText
-        })
-      }).catch(err => console.error('Twilio Voice notification failed:', err));
+      this.twilioDispatches.unshift(pdDispatch);
     }
   }
 
@@ -281,9 +240,24 @@ export class NotificationDeliveryService {
     alert.acknowledgedAt = Date.now();
     alert.clinicalAction = actionNote;
 
-    this.triggerPagerDutyAlert(`Alert Approved by ${doctorName}`, `Action: ${actionNote}`);
+    // Nurse approved a SUSPECT case → escalate to on-call doctor via PagerDuty
+    if (alert.severity === 'suspect') {
+      this.sendPagerDutyEvent(
+        'trigger',
+        alertId,
+        `[AuraCTG] Nurse Escalation — Suspect CTG on Bed ${alert.bedNumber}`,
+        {
+          bed: alert.bedNumber,
+          patient: alert.patientName,
+          morphology: alert.morphology,
+          escalating_clinician: doctorName,
+          action_taken: actionNote,
+        }
+      );
+    }
+    // Pathological cases are handled at bedside — no PD call on acknowledge
 
-    // Silence alarm if no more unacknowledged pathological alerts
+    // Silence alarm if no more unacknowledged alerts
     const remainingPath = this.alerts.some(a => !a.acknowledged && a.severity === 'pathological');
     const remainingSuspect = this.alerts.some(a => !a.acknowledged && a.severity === 'suspect');
 
@@ -296,6 +270,18 @@ export class NotificationDeliveryService {
     this.notify();
   }
 
+  /**
+   * Fire a manual PagerDuty test ping from the dashboard.
+   */
+  public sendTestPing() {
+    this.sendPagerDutyEvent(
+      'trigger',
+      `test-ping-${Date.now()}`,
+      '[AuraCTG TEST PING] Dashboard connectivity check',
+      { source: 'Manual test from Hammacher System dashboard', time: new Date().toISOString() }
+    );
+  }
+
   public clearAllAlerts() {
     this.alerts = [];
     audioTelemetry.setAlarm('none');
@@ -306,28 +292,18 @@ export class NotificationDeliveryService {
     if (typeof window === 'undefined') return;
     setInterval(() => {
       let changed = false;
-      const now = Date.now();
 
       for (const alert of this.alerts) {
         if (!alert.acknowledged && alert.severity === 'pathological') {
           if (alert.escalationTimer > 0) {
             alert.escalationTimer -= 1;
             changed = true;
-          } else {
-            // Timer expired, escalate to next tier if not at max
-            if (alert.escalationLevel === 2) {
-              alert.escalationLevel = 3;
-              alert.escalationTimer = 45; // 45s for tertiary
-              this.dispatchEscalation(alert, 3);
-              changed = true;
-            }
           }
+          // Auto-tier-3 PD escalation removed — PD fires only on nurse suspect approval
         }
       }
 
-      if (changed) {
-        this.notify();
-      }
+      if (changed) this.notify();
     }, 1000);
   }
 }

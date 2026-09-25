@@ -44,8 +44,8 @@ export class CTGSimulator {
     // Bed 5: Mild Suspect / Tachycardia
     this.createOrResetPatient('bed-5', 'suspect', 162);
 
-    // Bed 6: High-Risk Pathological Bradycardia
-    this.createOrResetPatient('bed-6', 'pathological', 85);
+    // Bed 6: Mild Suspect / Elevated Baseline
+    this.createOrResetPatient('bed-6', 'suspect', 160);
   }
 
   public createOrResetPatient(patientId: string, trajectory: TrajectoryType, baseBpm?: number): PatientSimulationState {

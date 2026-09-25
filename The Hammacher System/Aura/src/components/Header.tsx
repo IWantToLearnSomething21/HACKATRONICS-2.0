@@ -68,7 +68,8 @@ export const Header: React.FC<HeaderProps> = ({
     setHasPushPermission(perm === 'granted');
   };
 
-  const totalUnack = unacknowledgedAlertsCount.pathological + unacknowledgedAlertsCount.suspect;
+  const suspectCount = unacknowledgedAlertsCount.suspect;
+  const pathologicalCount = unacknowledgedAlertsCount.pathological;
 
   return (
     <header id="main-app-header" className="sticky top-0 z-40 bg-white border-b border-gray-100 shadow-xs">
@@ -134,34 +135,65 @@ export const Header: React.FC<HeaderProps> = ({
               </div>
             </button>
 
-
-
-            {/* Active Alert Center Button */}
+            {/* Test PD Ping — manual connectivity check */}
             <button
-              id="header-alert-center-btn"
-              onClick={onOpenAlertModal}
-              className={`flex items-center gap-2 px-3.5 py-2 rounded-lg text-xs font-bold uppercase tracking-wider transition cursor-pointer relative ${
-                unacknowledgedAlertsCount.pathological > 0
-                  ? 'bg-[#F04438] text-white shadow-lg shadow-[#F0443830] animate-alert-glow'
-                  : unacknowledgedAlertsCount.suspect > 0
-                  ? 'bg-[#F5A623] text-white shadow-xs'
-                  : 'bg-[#0055FF] hover:bg-blue-700 text-white shadow-md shadow-[#0055FF30]'
-              }`}
+              id="header-test-ping-btn"
+              onClick={() => notificationService.sendTestPing()}
+              title="Send a test PagerDuty ping to verify on-call routing"
+              className="flex items-center gap-1.5 px-2.5 py-2 rounded-lg text-xs font-bold uppercase tracking-wider bg-gray-100 hover:bg-gray-200 text-gray-500 hover:text-gray-800 transition cursor-pointer border border-gray-200"
             >
-              {unacknowledgedAlertsCount.pathological > 0 ? (
-                <Zap className="w-3.5 h-3.5" />
-              ) : unacknowledgedAlertsCount.suspect > 0 ? (
-                <AlertTriangle className="w-3.5 h-3.5" />
-              ) : (
-                <div className="w-2 h-2 rounded-full bg-[#34D399] shadow-[0_0_8px_#34D399]"></div>
-              )}
-              <span>
-                {totalUnack > 0 ? `${totalUnack} Actionable Alert${totalUnack > 1 ? 's' : ''}` : 'Acknowledge Alerts'}
-              </span>
-              {totalUnack > 0 && (
-                <span className="w-2 h-2 rounded-full bg-white animate-ping absolute -top-1 -right-1"></span>
-              )}
+              <Radio className="w-3.5 h-3.5" />
+              <span className="hidden lg:inline">Test Ping</span>
             </button>
+
+            {/* Alert Pills: one per class, each matching the ward badge count */}
+            <div className="flex items-center gap-1.5">
+
+              {/* Pathological — Critical Emergency */}
+              <button
+                id="header-alert-critical-btn"
+                onClick={onOpenAlertModal}
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold uppercase tracking-wider transition cursor-pointer relative ${
+                  pathologicalCount > 0
+                    ? 'bg-[#F04438] text-white shadow-lg shadow-[#F0443830] animate-alert-glow'
+                    : 'bg-gray-100 text-gray-400 cursor-default'
+                }`}
+                title="Pathological cases — direct emergency dispatch active"
+              >
+                <Zap className="w-3.5 h-3.5" />
+                <span>{pathologicalCount} Critical</span>
+                {pathologicalCount > 0 && (
+                  <span className="w-2 h-2 rounded-full bg-white animate-ping absolute -top-1 -right-1"></span>
+                )}
+              </button>
+
+              {/* Suspect — Actionable Alerts */}
+              <button
+                id="header-alert-center-btn"
+                onClick={onOpenAlertModal}
+                className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-bold uppercase tracking-wider transition cursor-pointer relative ${
+                  suspectCount > 0
+                    ? 'bg-[#F5A623] text-white shadow-md shadow-[#F5A62330]'
+                    : 'bg-[#0055FF] hover:bg-blue-700 text-white shadow-md shadow-[#0055FF30]'
+                }`}
+                title="Suspect cases — physician action required"
+              >
+                {suspectCount > 0 ? (
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                ) : (
+                  <div className="w-2 h-2 rounded-full bg-[#34D399] shadow-[0_0_8px_#34D399]"></div>
+                )}
+                <span>
+                  {suspectCount > 0
+                    ? `${suspectCount} Actionable Alert${suspectCount > 1 ? 's' : ''}`
+                    : 'All Clear'}
+                </span>
+                {suspectCount > 0 && (
+                  <span className="w-2 h-2 rounded-full bg-white animate-ping absolute -top-1 -right-1"></span>
+                )}
+              </button>
+
+            </div>
 
           </div>
         </div>

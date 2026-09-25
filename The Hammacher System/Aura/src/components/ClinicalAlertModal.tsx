@@ -218,10 +218,18 @@ export const ClinicalAlertModal: React.FC<ClinicalAlertModalProps> = ({
           <button
             type="button"
             onClick={handleAcknowledge}
-            className="px-6 py-2.5 rounded-lg bg-[#0055FF] hover:bg-blue-600 text-white text-xs font-bold uppercase tracking-wider transition flex items-center gap-2 cursor-pointer shadow-md shadow-[#0055FF30]"
+            className={`px-6 py-2.5 rounded-lg text-white text-xs font-bold uppercase tracking-wider transition flex items-center gap-2 cursor-pointer shadow-md ${
+              isPathological
+                ? 'bg-[#F04438] hover:bg-red-600 shadow-[#F0443830]'
+                : 'bg-[#F5A623] hover:bg-amber-500 shadow-[#F5A62330]'
+            }`}
           >
             <CheckCircle2 className="w-4 h-4" />
-            <span>Sign & Acknowledge Alert</span>
+            <span>
+              {isPathological
+                ? 'Acknowledge — Handled at Bedside'
+                : '⚡ Approve & Escalate to Doctor'}
+            </span>
           </button>
         </div>
 

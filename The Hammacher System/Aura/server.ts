@@ -135,7 +135,7 @@ app.post('/predict', async (req, res) => {
     if (clinicalReasoning.length === 0) {
       clinicalReasoning.push('The specific combination of variability, decelerations, and baseline features aligns with severe distress patterns.');
     }
-  } else if (pS >= 0.40 || pS > pN) {
+  } else if (pS >= 0.32 || pS > pN) {
     classCode = 2;
     diagnosis = 'Suspect';
     suggestedAction = 'Re-evaluate in 30 mins.';
@@ -209,7 +209,7 @@ app.post('/api/inference', (req, res) => {
   if (pP >= 0.45 || (pP > pS && pP > pN)) {
     predictedClass = 3;
     className = 'Pathological';
-  } else if (pS >= 0.45 || pS > pN) {
+  } else if (pS >= 0.32 || pS > pN) {
     predictedClass = 2;
     className = 'Suspect';
   }
@@ -221,6 +221,49 @@ app.post('/api/inference', (req, res) => {
     featuresEvaluated: Object.keys(features).length,
     timestamp: Date.now()
   });
+});
+
+// PagerDuty Events v2 Proxy Endpoint
+app.post('/api/notify/pagerduty', async (req, res) => {
+  const { eventAction, dedupKey, summary, details } = req.body;
+  const routingKey = process.env.PAGERDUTY_ROUTING_KEY;
+
+  if (!routingKey) {
+    console.warn('[PagerDuty] PAGERDUTY_ROUTING_KEY not set \u2014 notification not sent.');
+    res.json({ success: false, mode: 'no_key', note: 'Set PAGERDUTY_ROUTING_KEY in .env to enable real alerts.' });
+    return;
+  }
+
+  try {
+    const payload: Record<string, unknown> = {
+      routing_key: routingKey,
+      event_action: eventAction,
+      dedup_key: dedupKey,
+    };
+
+    // "trigger" events need a full payload; "resolve" only needs routing_key + dedup_key
+    if (eventAction === 'trigger') {
+      payload.payload = {
+        summary,
+        severity: 'critical',
+        source: 'AuraCTG \u2014 Labor & Delivery',
+        custom_details: details ?? {},
+      };
+    }
+
+    const pdRes = await fetch('https://events.pagerduty.com/v2/enqueue', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await pdRes.json();
+    console.log(`[PagerDuty] ${eventAction.toUpperCase()} → HTTP ${pdRes.status} | dedup_key=${dedupKey} | status=${data.status} | msg=${data.message ?? 'ok'}`);
+    res.json({ success: pdRes.ok, mode: 'live_pagerduty', status: data.status, dedup_key: data.dedup_key });
+  } catch (e) {
+    console.error('[PagerDuty] Dispatch failed:', e);
+    res.status(500).json({ error: String(e) });
+  }
 });
 
 // Twilio SMS Proxy Endpoint (with graceful simulated fallback)

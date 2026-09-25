@@ -21,17 +21,79 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'ward' | 'live-monitor' | 'roster' | 'features'>('ward');
   const [isAlertModalOpen, setIsAlertModalOpen] = useState<boolean>(false);
   const [alerts, setAlerts] = useState<ClinicalAlert[]>([]);
-  const [alertCounts, setAlertCounts] = useState({ suspect: 0, pathological: 0 });
 
   const prevClassesRef = useRef<Record<string, number>>({});
+  // Watchdog: track when each class first went missing (ms timestamp)
+  const suspectMissingRef = useRef<number | null>(null);
+  const pathologicalMissingRef = useRef<number | null>(null);
 
-  // Subscribe to notification updates
+  // Subscribe to notification service — modal content only
   useEffect(() => {
     const unsub = notificationService.subscribe(() => {
       setAlerts(notificationService.getAlerts());
-      setAlertCounts(notificationService.getActiveAlertCount());
     });
     return unsub;
+  }, []);
+
+  // Derive alert counts from patient ML state — always identical to ward badge counts
+  const alertCounts = {
+    suspect:     patients.filter(p => p.latestPrediction.predictedClass === 2).length,
+    pathological: patients.filter(p => p.latestPrediction.predictedClass === 3).length,
+  };
+
+  // Watchdog: guarantee at least 1 suspect + 1 pathological patient within defined grace windows
+  useEffect(() => {
+    const SUSPECT_GRACE_MS = 3000;      // spawn suspect within 3 s of going empty
+    const PATHOLOGICAL_GRACE_MS = 10000; // spawn pathological within 10 s
+    const watchdog = setInterval(() => {
+      const now = Date.now();
+      setPatients(current => {
+        const hasS = current.some(p => p.latestPrediction.predictedClass === 2);
+        const hasP = current.some(p => p.latestPrediction.predictedClass === 3);
+        let next = current;
+
+        // --- Suspect watchdog ---
+        if (hasS) {
+          suspectMissingRef.current = null;
+        } else {
+          if (suspectMissingRef.current === null) {
+            suspectMissingRef.current = now;
+          } else if (now - suspectMissingRef.current >= SUSPECT_GRACE_MS) {
+            // Force the first patient that isn't already on a non-normal trajectory
+            const target = current.find(
+              p => p.latestPrediction.predictedClass === 1 && p.trajectory !== 'suspect' && p.trajectory !== 'pathological'
+            ) ?? current.find(p => p.latestPrediction.predictedClass === 1);
+            if (target) {
+              globalSimulator.setPatientTrajectory(target.id, 'suspect');
+              next = next.map(p => p.id === target.id ? { ...p, trajectory: 'suspect' } : p);
+            }
+            suspectMissingRef.current = null;
+          }
+        }
+
+        // --- Pathological watchdog ---
+        if (hasP) {
+          pathologicalMissingRef.current = null;
+        } else {
+          if (pathologicalMissingRef.current === null) {
+            pathologicalMissingRef.current = now;
+          } else if (now - pathologicalMissingRef.current >= PATHOLOGICAL_GRACE_MS) {
+            // Prefer a normal patient; fall back to any non-pathological
+            const target = current.find(
+              p => p.latestPrediction.predictedClass === 1 && p.trajectory !== 'pathological'
+            ) ?? current.find(p => p.latestPrediction.predictedClass !== 3);
+            if (target) {
+              globalSimulator.setPatientTrajectory(target.id, 'pathological');
+              next = next.map(p => p.id === target.id ? { ...p, trajectory: 'pathological' } : p);
+            }
+            pathologicalMissingRef.current = null;
+          }
+        }
+
+        return next;
+      });
+    }, 1000);
+    return () => clearInterval(watchdog);
   }, []);
 
   // Main 0.5Hz Simulation & Real-Time Inference Loop
@@ -66,6 +128,14 @@ export default function App() {
                     { ...patient, latestPrediction: prediction, currentFhr: sample.fhr, currentUc: sample.uc },
                     'suspect'
                   );
+                } else if (currentClass === 1) {
+                  // Patient recovered — auto-acknowledge any outstanding alert so counts stay clean
+                  const staleAlert = notificationService.getAlerts().find(
+                    a => a.patientId === patient.id && !a.acknowledged
+                  );
+                  if (staleAlert) {
+                    notificationService.acknowledgeAlert(staleAlert.id, 'System (Auto-Resolved)', 'Patient recovered to Normal — alert auto-cleared.');
+                  }
                 }
               }
               
